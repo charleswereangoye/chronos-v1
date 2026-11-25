@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> ### 📦 Archived — Chronos v1
+> **Chronos v1 is complete and frozen as a public, read-only reference.**
+> Active development has moved to a private v2 rebuild. This repository documents the original prototype and architecture, and is preserved for historical reference. No further updates, issues, or pull requests will be accepted.
+
 <div align="center">
 
 <img src="assets/banner.jpg" alt="Chronos Banner" width="100%"/>
@@ -45,8 +50,8 @@ graph TD
     
     %% Sub-Agents
     SA["🌐 Media & Social Agent<br/>(Content Synthesis & Publishing)"]
-    FA["📈 Financial/Forex Agent<br/>(Market Analytics - WIP)"]
-    JA["💼 Workflow Agent<br/>(Process Automation - WIP)"]
+    FA["📈 Financial & Forex Agent<br/>(Market Regime & Risk Guard)"]
+    JA["💼 Job Seeking Agent<br/>(Profile Synthesis & CV Tailoring)"]
     CA["🤖 General AI Chatbot<br/>(Multimodal Voice & Text)"]
 
     MO -- "Asynchronous Dispatch" --> SA
@@ -98,11 +103,12 @@ An autonomous media synthesis and distribution pipeline (`agents/social_agent/`)
 
 ### 4.3 Analytical & Workflow Agents
 
-#### 4.3.1 Financial Analytics Agent (WIP)
-A dedicated financial agent monitoring raw market data.
-*   **Monitoring & Alerts:** Evaluates technical setups, parses economic calendars, and feeds real-time price action sentiment back into the Social Agent for cohesive content.
+#### 4.3.1 Financial & Forex Agent
+A dedicated market monitoring agent for gold (XAU/USD).
+*   **Market Regime Analysis:** Evaluates market conditions and technical indicators using Yahoo Finance data feeds.
+*   **Calendar & Risk Guard:** Tracks economic calendar releases for high-impact news, enforces trading session killzones, and validates risk parameters prior to surfacing setup proposals via the Orchestrator.
 
-#### 4.3.2 Job Seeking & Productivity Agent
+#### 4.3.2 Job Seeking Agent
 An automated career manager that acts as your personal job-seeking proxy.
 *   **Profile Synthesizer:** Scrapes and merges your GitHub, LinkedIn, and base Resume into a master JSON profile using Gemini.
 *   **Automated CV & Cover Letter Tailoring:** Uses Playwright to scrape a target job description URL, deeply analyzes the requirements, and instantly tailors your CV and Cover Letter to match.
@@ -202,15 +208,6 @@ pytest test_*.py -v
 ## 7. License and Governance
 
 This project is licensed under the **MIT License**. See the `LICENSE` file for full details. 
-
-## 8. Project Roadmap & Future Milestones
-
-**⏳ Pending Modules:**
-*   [ ] **YouTube Shorts Automation:** Playwright headless login support for YouTube Shorts stealth uploads.
-*   [ ] **Forex Agent Expansion:** MT4/MT5 webhook integration and explicit TradingView alert parsing.
-*   [x] **Job Seeking Agent CV Tailoring:** Fully autonomous profile synthesis and ATS-optimized document generation.
-*   [ ] **Job Seeking Agent Auto-Apply:** Selenium-based auto-apply scripts and IMAP interview matching.
-*   [ ] **Cloud VPS Daemon Optimization:** Deep optimization for persistent 24/7 autonomous heartbeat execution on low-tier cloud hardware.
 
 ---
 
