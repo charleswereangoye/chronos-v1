@@ -1,3 +1,4 @@
+import asyncio
 import os
 from shared.logger import get_logger
 from shared.config import DRY_RUN
@@ -160,7 +161,7 @@ class SocialAgentCoordinator:
             if quote:
                 # Render the static tweet image to use as the meme header!
                 header_image_path = await self.publisher.render_tweet_image(quote, filename="video_header.png")
-                video_path = self.video_agent.render_video(header_image_path, template_video_path)
+                video_path = await asyncio.to_thread(self.video_agent.render_video, header_image_path, template_video_path)
             else:
                 video_path = template_video_path
             
@@ -181,7 +182,7 @@ class SocialAgentCoordinator:
             logger.info("DRY_RUN IS OFF: Executing network posts for video...")
             if video_path:
                 x_success = await self.publisher.post_video_to_x(x_post_text, video_path)
-                meta_success = self.publisher.post_reel_to_meta(caption, video_path)
+                meta_success = await asyncio.to_thread(self.publisher.post_reel_to_meta, caption, video_path)
                 logger.info(f"Video generated at {video_path}. Please post to TikTok manually to avoid anti-bot logouts.")
                 self.memory.save_video_post(quote, caption, draft.get('emotion', 'general'), os.path.basename(video_path))
             else:
@@ -193,7 +194,7 @@ class SocialAgentCoordinator:
             x_success = await self.publisher.post_to_x_stealth(x_post_text, image_path=image_path if draft['type'] == 'news' else None)
             
             if image_path:
-                meta_success = self.publisher.post_to_meta(caption=caption, image_path=image_path)
+                meta_success = await asyncio.to_thread(self.publisher.post_to_meta, caption=caption, image_path=image_path)
             else:
                 meta_success = False
             
@@ -232,7 +233,7 @@ class SocialAgentCoordinator:
             else:
                 logger.info("DRY_RUN IS OFF: Executing network posts...")
                 await self.publisher.post_to_x_stealth(quote)
-                self.publisher.post_to_meta(caption=caption, image_path=image_path)
+                await asyncio.to_thread(self.publisher.post_to_meta, caption=caption, image_path=image_path)
                 
         elif post_type == "2":
             quote = input("\nEnter the text/caption for this post (goes on X and Meta): ").strip()
@@ -253,7 +254,7 @@ class SocialAgentCoordinator:
             else:
                 logger.info("DRY_RUN IS OFF: Executing network posts...")
                 await self.publisher.post_to_x_stealth(quote, image_path=photo_path)
-                self.publisher.post_to_meta(caption=quote, image_path=rendered_image_path)
+                await asyncio.to_thread(self.publisher.post_to_meta, caption=quote, image_path=rendered_image_path)
         else:
             print("Invalid choice. Aborting manual post.")
             return

@@ -144,9 +144,13 @@ class ForexAdvisor(BaseAgent):
             "Ensure a tight structural stop loss and a realistic target honoring >= 1:2.0 Risk-to-Reward ratio."
         )
 
-        default_fallback = self._build_deterministic_fallback(
-            pair=pair, regime_data=regime_data, calendar_data=calendar_data
-        )
+        # Fail closed: if the AI briefing fails, report NEUTRAL with no levels
+        # rather than inventing entries/stops from ATR multiples.
+        default_fallback = {
+            "market_bias": "NEUTRAL",
+            "key_levels": {},
+            "thesis": "AI briefing unavailable; no setup levels produced.",
+        }
 
         prompt = f"""
 You are an Elite Institutional FX & Gold Quantitative Strategist and Senior Risk Manager.

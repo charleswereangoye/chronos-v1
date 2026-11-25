@@ -225,13 +225,13 @@ class RegimeAnalyzer(BaseAgent):
                 f"Failed to fetch Yahoo candles for {pair} ({interval}): {e}"
             )
 
-        interval_sec = 900 if interval == "15m" else 3600
-        return self._generate_fallback_candles(pair=pair, count=50, interval_seconds=interval_sec)
+        # Fail closed: never substitute synthetic prices for live market data.
+        return []
 
     def _generate_fallback_candles(
         self, pair: str, count: int = 50, interval_seconds: int = 3600
     ) -> list[Candle]:
-        """Generates deterministic synthetic candles when external market data is unavailable."""
+        """Generates deterministic synthetic candles. TEST FIXTURES ONLY: never used for live analysis."""
         base_prices = {
             "EURUSD": 1.0850,
             "GBPUSD": 1.2950,
@@ -511,6 +511,14 @@ class RegimeAnalyzer(BaseAgent):
             ]
         else:
             candles_4h = self.resample_to_4h(candles_1h)
+
+        # Fail closed if live data is missing: no analysis on invented prices.
+        needs_15m = is_gold or payload.get("mode") == "day_trade" or payload.get("include_15m", False)
+        if not candles_1h or not candles_4h or (needs_15m and not candles_15m):
+            return AgentResult(
+                status=AgentStatus.FAILED,
+                error_message="Live market data unavailable (price feed returned no candles).",
+            )
 
         # 3. Calculate 15M (if available), 1H, and 4H regimes
         regime_15m = self.evaluate_timeframe(candles_15m, "15M") if candles_15m else None

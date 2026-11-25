@@ -84,7 +84,8 @@ def generate_content_with_failover(
     prompt_text: str,
     system_instruction: Optional[str] = None,
     temperature: Optional[float] = None,
-    max_attempts: int = 3
+    max_attempts: int = 3,
+    use_groq_fallback: bool = True,
 ) -> Any:
     """
     Generates content using Gemini with automatic key and model failover,
@@ -117,9 +118,10 @@ def generate_content_with_failover(
             time.sleep(0.5 * attempt)
             
     # If Gemini attempts exhausted, attempt Groq Free Tier
-    groq_resp = query_groq_fallback(prompt_text, system_instruction, temperature)
-    if groq_resp:
-        return groq_resp
+    if use_groq_fallback:
+        groq_resp = query_groq_fallback(prompt_text, system_instruction, temperature)
+        if groq_resp:
+            return groq_resp
 
     logger.error("All LLM providers and attempts exhausted.")
     raise last_error or RuntimeError("Failed to generate content after all attempts.")
@@ -140,7 +142,8 @@ def generate_json_with_failover(
                 prompt_text=prompt_text,
                 system_instruction=system_instruction,
                 temperature=temperature,
-                max_attempts=1
+                max_attempts=1,
+                use_groq_fallback=False,  # Groq is tried once, below, after all Gemini attempts
             )
             return extract_clean_json(response.text)
         except Exception as e:

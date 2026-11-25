@@ -59,7 +59,26 @@ class ForexCoordinator(BaseAgent):
             **custom_payload.get("regime", {}),
         }
         regime_res = await self.regime_analyzer.run(regime_payload)
-        regime_data = regime_res.data if regime_res.is_success else {}
+        if not regime_res.is_success:
+            # Fail closed: without live prices there is no setup to report.
+            return {
+                "pair": pair,
+                "trade_action": "DATA_UNAVAILABLE",
+                "summary_status": f"NO ANALYSIS: {regime_res.error_message or 'market data unavailable'}",
+                "defensive_hold": defensive_hold,
+                "hold_reason": hold_reason,
+                "market_bias": "NEUTRAL",
+                "current_price": None,
+                "key_levels": {},
+                "risk_evaluation": {},
+                "thesis": "No analysis was run because live market data could not be fetched.",
+                "sessions": {},
+                "regime_15m": None,
+                "regime_1h": {},
+                "regime_4h": {},
+                "high_impact_events": calendar_data.get("high_impact_events", []),
+            }
+        regime_data = regime_res.data
 
         # Step 3: Advisor Synthesis
         advisor_payload = {
@@ -75,10 +94,15 @@ class ForexCoordinator(BaseAgent):
         key_levels = briefing.get("key_levels", {})
         thesis = briefing.get("thesis", "No thesis generated.")
 
-        entry_1 = float(key_levels.get("entry_1_aggressive_fvg", regime_data.get("current_price", 1.0)))
+        # Fail closed: missing levels mean no setup. Never fill them in with guesses.
+        required = ("entry_1_aggressive_fvg", "stop_loss", "target_1")
+        if any(key_levels.get(k) in (None, "", 0, 0.0) for k in required):
+            market_bias = "NEUTRAL"
+            key_levels = {}
+        entry_1 = float(key_levels.get("entry_1_aggressive_fvg", 0.0))
         entry_2 = float(key_levels.get("entry_2_extreme_ob", entry_1))
-        stop_loss = float(key_levels.get("stop_loss", entry_1 * 0.99))
-        target_1 = float(key_levels.get("target_1", entry_1 * 1.02))
+        stop_loss = float(key_levels.get("stop_loss", 0.0))
+        target_1 = float(key_levels.get("target_1", 0.0))
         target_2 = float(key_levels.get("target_2", target_1))
         htf_ob_zone = key_levels.get("htf_ob_zone", "N/A")
 
@@ -105,13 +129,13 @@ class ForexCoordinator(BaseAgent):
         if defensive_hold:
             trade_action = "DEFENSIVE_HOLD"
             summary_status = "HOLD: High-impact macro news scheduled within 30 minutes."
+        elif market_bias == "NEUTRAL":
+            trade_action = "NEUTRAL_STANDBY"
+            summary_status = "STANDBY: No validated setup; awaiting directional break."
         elif not is_risk_approved:
             trade_action = "REJECTED_BY_RISK_GUARD"
             reasons = "; ".join(risk_data.get("rejection_reasons", ["Risk bounds violated"]))
             summary_status = f"REJECTED: {reasons}"
-        elif market_bias == "NEUTRAL":
-            trade_action = "NEUTRAL_STANDBY"
-            summary_status = "STANDBY: Market is in horizontal consolidation; awaiting directional break."
         else:
             trade_action = "READY_FOR_HITL_REVIEW"
             summary_status = "VALIDATED: Setup fulfills 1% risk ceiling and >= 1:2 R:R institutional bounds."

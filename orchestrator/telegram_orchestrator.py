@@ -12,6 +12,8 @@ from telegram.ext import (
     MessageHandler,
     CommandHandler,
     CallbackQueryHandler,
+    TypeHandler,
+    ApplicationHandlerStop,
     filters,
     ContextTypes,
     ConversationHandler,
@@ -20,7 +22,7 @@ from telegram.ext import (
 # Ensure the root chronos directory is in the path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.config import TELEGRAM_BOT_TOKEN
+from shared.config import TELEGRAM_BOT_TOKEN, OWNER_TELEGRAM_ID
 from agents.social_agent.social_coordinator import SocialAgentCoordinator
 from agents.forex_agent.forex_coordinator import ForexCoordinator
 from agents.forex_agent.calendar_monitor import CalendarMonitor
@@ -819,8 +821,6 @@ async def check_market_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global scheduler
-    if scheduler and update.effective_chat:
-        scheduler.set_target_chat_id(update.effective_chat.id)
     reply_markup = ReplyKeyboardMarkup(
         main_menu_keyboard, resize_keyboard=True, one_time_keyboard=False
     )
@@ -833,8 +833,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global scheduler
-    if scheduler and update.effective_chat:
-        scheduler.set_target_chat_id(update.effective_chat.id)
     text = update.message.text
 
     if text.startswith("0"):
@@ -1103,12 +1101,10 @@ async def social_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             if networks.get("meta"):
                 if media_path and media_path.endswith(".mp4"):
-                    meta_success = coordinator.publisher.post_reel_to_meta(
-                        caption, media_path
+                    meta_success = await asyncio.to_thread(coordinator.publisher.post_reel_to_meta, caption, media_path
                     )
                 else:
-                    meta_success = coordinator.publisher.post_to_meta(
-                        caption, image_path=media_path
+                    meta_success = await asyncio.to_thread(coordinator.publisher.post_to_meta, caption, image_path=media_path
                     )
 
             x_icon = "✅" if x_success else "❌ FAILED"
@@ -1417,7 +1413,7 @@ async def complete_manual_text(update: Update, context: ContextTypes.DEFAULT_TYP
             quote, filename="manual_quote.png"
         )
         await coordinator.publisher.post_to_x_stealth(full_x_post)
-        coordinator.publisher.post_to_meta(caption=full_meta_caption, image_path=image_path)
+        await asyncio.to_thread(coordinator.publisher.post_to_meta, caption=full_meta_caption, image_path=image_path)
 
         msg = f"✅ *Manual Text Post Complete!*\n\n*X Post:*\n{full_x_post}\n\n*Meta Caption:*\n{full_meta_caption}"
         with open(image_path, "rb") as photo:
@@ -1482,8 +1478,7 @@ async def complete_manual_photo(update: Update, context: ContextTypes.DEFAULT_TY
             )
         )
         await coordinator.publisher.post_to_x_stealth(full_caption, image_path=photo_path)
-        coordinator.publisher.post_to_meta(
-            caption=full_caption, image_path=rendered_image_path
+        await asyncio.to_thread(coordinator.publisher.post_to_meta, caption=full_caption, image_path=rendered_image_path
         )
 
         msg = f"✅ *Manual Photo Post Complete!*\n\n*X Post & Meta Caption:*\n{full_caption}"
@@ -1842,8 +1837,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             x_res = await coordinator.publisher.post_to_x_stealth(
                 draft["x_post_text"], image_path=image_path
             )
-            meta_res = coordinator.publisher.post_to_meta(
-                caption=draft["caption"], image_path=image_path
+            meta_res = await asyncio.to_thread(coordinator.publisher.post_to_meta, caption=draft["caption"], image_path=image_path
             )
             await query.edit_message_text(
                 f"✅ <b>Published Successfully!</b>\n\n"
@@ -1934,15 +1928,39 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await safe_edit_message_text(query, f"❌ Error refreshing analysis: {e}")
 
 
+async def owner_only_gate(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Runs before every other handler. Drops any update not sent by the owner,
+    in a private chat with the owner, so strangers can't use the bot, post to
+    your accounts, or redirect scheduler alerts."""
+    user = getattr(update, "effective_user", None)
+    chat = getattr(update, "effective_chat", None)
+    if (
+        user is None
+        or user.id != OWNER_TELEGRAM_ID
+        or (chat is not None and chat.id != OWNER_TELEGRAM_ID)
+    ):
+        logger.warning(
+            "Blocked update from non-owner user_id=%s chat_id=%s",
+            getattr(user, "id", None),
+            getattr(chat, "id", None),
+        )
+        raise ApplicationHandlerStop
+
+
 def main():
     global scheduler
     if not TELEGRAM_BOT_TOKEN:
         print("TELEGRAM_BOT_TOKEN is not set in .env!")
         return
+    if OWNER_TELEGRAM_ID is None:
+        print("OWNER_TELEGRAM_ID is not set in .env! Refusing to start an unprotected bot.")
+        return
 
     async def post_init(application):
         global scheduler
         scheduler = AutonomousScheduler(application)
+        # Alerts always go to the owner's private chat, whatever was saved before.
+        scheduler.set_target_chat_id(OWNER_TELEGRAM_ID)
         asyncio.create_task(scheduler.start_loop())
 
     # Set long timeouts so image rendering and posting doesn't time out the bot
@@ -2062,6 +2080,8 @@ def main():
         allow_reentry=True,
     )
 
+    # group=-1 runs first; it stops every update that isn't from the owner.
+    application.add_handler(TypeHandler(Update, owner_only_gate), group=-1)
     application.add_handler(CommandHandler("check_market", check_market_command))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
     application.add_handler(conv_handler)

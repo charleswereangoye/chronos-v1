@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json
 import logging
@@ -44,8 +45,10 @@ class ChatAgent:
 
     def _save_memory(self):
         try:
-            with open(self.memory_file, "w", encoding="utf-8") as f:
+            tmp = f"{self.memory_file}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.memories, f, indent=2)
+            os.replace(tmp, self.memory_file)
         except Exception as e:
             logger.error(f"Failed to save chat memory: {e}")
 
@@ -69,13 +72,23 @@ class ChatAgent:
         self._save_memory()
 
     async def chat(
-        self, 
-        user_id: int, 
-        message: Optional[str] = None, 
-        media_path: Optional[str] = None, 
+        self,
+        user_id: int,
+        message: Optional[str] = None,
+        media_path: Optional[str] = None,
         persona: str = "Standard"
     ) -> str:
-        """Processes a chat request, optionally with a voice note or image."""
+        """Processes a chat request in a worker thread so the bot stays responsive."""
+        return await asyncio.to_thread(self._chat_sync, user_id, message, media_path, persona)
+
+    def _chat_sync(
+        self,
+        user_id: int,
+        message: Optional[str] = None,
+        media_path: Optional[str] = None,
+        persona: str = "Standard"
+    ) -> str:
+        """Blocking implementation: Gemini upload + generation."""
         uid = str(user_id)
         system_instruction = self.personas.get(persona, self.personas["Standard"])
         history = self._get_history(uid)

@@ -28,6 +28,7 @@ venv.bak/
 # Session & State Data (Preventing Leakage of Keys, Profiles, Cache, and Cookies)
 agents/social_agent/state/
 agents/job_seeking/state/
+agents/general_chat/state/
 *state.json
 scheduler_state.json
 cookies.json

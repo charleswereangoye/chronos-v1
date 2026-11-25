@@ -3,6 +3,7 @@ import json
 import time
 import requests
 import traceback
+import html
 from datetime import datetime
 from playwright.async_api import async_playwright
 from twikit import Client
@@ -32,7 +33,7 @@ class PublisherAgent:
         raw_time = datetime.now().strftime("%I:%M %p · %b %d, %Y")
         current_time = raw_time.lstrip("0").replace(" 0", " ")
         
-        rendered_html = html_content.replace("{{ quote }}", quote_text)
+        rendered_html = html_content.replace("{{ quote }}", html.escape(quote_text))
         rendered_html = rendered_html.replace("{{ timestamp }}", current_time)
         rendered_html = rendered_html.replace("8:00 AM · {{ date }}", current_time)
         
@@ -84,7 +85,7 @@ class PublisherAgent:
         # Absolute path for local image rendering in playwright
         abs_photo_path = f"file://{os.path.abspath(custom_photo_path)}"
         
-        rendered_html = html_content.replace("{{ quote }}", quote_text)
+        rendered_html = html_content.replace("{{ quote }}", html.escape(quote_text))
         rendered_html = rendered_html.replace("{{ image_src }}", abs_photo_path)
         rendered_html = rendered_html.replace("{{ timestamp }}", current_time)
         
@@ -123,7 +124,7 @@ class PublisherAgent:
         raw_time = datetime.now().strftime("%I:%M %p · %b %d, %Y")
         current_time = raw_time.lstrip("0").replace(" 0", " ")
         
-        rendered_html = html_content.replace("{{ news_content }}", news_content)
+        rendered_html = html_content.replace("{{ news_content }}", html.escape(news_content))
         rendered_html = rendered_html.replace("{{ timestamp }}", current_time)
         
         import uuid
@@ -169,64 +170,91 @@ class PublisherAgent:
             traceback.print_exc()
             return False
 
+    # ---- Meta Graph API helpers -------------------------------------------
+    # Token goes in the Authorization header (never in URLs, which end up in logs).
+    # Every request has a timeout. Version is configurable via META_GRAPH_VERSION.
+
+    @staticmethod
+    def _graph_url(path: str) -> str:
+        version = os.getenv("META_GRAPH_VERSION", "v23.0")
+        return f"https://graph.facebook.com/{version}/{path.lstrip('/')}"
+
+    @staticmethod
+    def _auth_headers(extra: dict | None = None) -> dict:
+        headers = {"Authorization": f"OAuth {META_PAGE_ACCESS_TOKEN}"}
+        if extra:
+            headers.update(extra)
+        return headers
+
+    def _graph(self, method: str, path: str, timeout: float = 30.0, **kwargs) -> dict:
+        resp = requests.request(
+            method, self._graph_url(path), headers=self._auth_headers(), timeout=timeout, **kwargs
+        )
+        try:
+            return resp.json()
+        except ValueError:
+            return {"error": {"message": f"Non-JSON response (HTTP {resp.status_code})"}}
+
+    def _wait_for_ig_container(self, container_id: str, attempts: int = 24, delay: float = 5.0) -> bool:
+        """Polls an IG media container until FINISHED. Runs in a worker thread."""
+        for _ in range(attempts):
+            status = self._graph("GET", container_id, params={"fields": "status_code"})
+            code = status.get("status_code")
+            if code == "FINISHED":
+                return True
+            if code == "ERROR":
+                logger.error(f"IG media processing error: {status}")
+                return False
+            time.sleep(delay)
+        logger.error("IG media processing timed out.")
+        return False
+
     def post_to_meta(self, caption: str, image_path: str):
+        """Blocking: call via asyncio.to_thread from async code."""
         if not all([FB_PAGE_ID, IG_USER_ID, META_PAGE_ACCESS_TOKEN]):
             logger.error("Missing Meta API credentials in .env file.")
             return False
-            
+
         if not os.path.exists(image_path):
             logger.error(f"Image file not found at {image_path}")
             return False
-            
+
         logger.info("--- STARTING META (FB & IG) PUBLISHING ---")
-        fb_photo_url = f"https://graph.facebook.com/v19.0/{FB_PAGE_ID}/photos"
-        
         try:
             with open(image_path, "rb") as image_file:
-                fb_payload = {"caption": caption, "access_token": META_PAGE_ACCESS_TOKEN}
-                fb_files = {"source": image_file}
-                fb_response = requests.post(fb_photo_url, data=fb_payload, files=fb_files)
-                fb_data = fb_response.json()
-                
+                fb_data = self._graph(
+                    "POST", f"{FB_PAGE_ID}/photos", timeout=120.0,
+                    data={"caption": caption}, files={"source": image_file},
+                )
             if "id" not in fb_data:
                 logger.error(f"Facebook Posting Failed: {fb_data}")
                 return False
-                
+
             photo_id = fb_data["id"]
             logger.info(f"Published to Facebook Page (Photo ID: {photo_id})")
-            
-            photo_info_url = f"https://graph.facebook.com/v19.0/{photo_id}?fields=images&access_token={META_PAGE_ACCESS_TOKEN}"
-            photo_res = requests.get(photo_info_url).json()
+
+            # IG needs an image URL; reuse the copy Facebook now hosts.
+            photo_res = self._graph("GET", photo_id, params={"fields": "images"})
             public_image_url = photo_res["images"][0]["source"]
-            
-            ig_container_url = f"https://graph.facebook.com/v19.0/{IG_USER_ID}/media"
-            ig_container_payload = {
-                "image_url": public_image_url,
-                "caption": caption,
-                "access_token": META_PAGE_ACCESS_TOKEN
-            }
-            container_res = requests.post(ig_container_url, data=ig_container_payload).json()
-            
+
+            container_res = self._graph(
+                "POST", f"{IG_USER_ID}/media",
+                data={"image_url": public_image_url, "caption": caption},
+            )
             if "id" not in container_res:
                 logger.error(f"Instagram Container Creation Failed: {container_res}")
                 return False
-                
+
             container_id = container_res["id"]
-            time.sleep(3)
-            
-            ig_publish_url = f"https://graph.facebook.com/v19.0/{IG_USER_ID}/media_publish"
-            ig_publish_payload = {
-                "creation_id": container_id,
-                "access_token": META_PAGE_ACCESS_TOKEN
-            }
-            publish_res = requests.post(ig_publish_url, data=ig_publish_payload).json()
-            
+            if not self._wait_for_ig_container(container_id, attempts=12, delay=3.0):
+                return False
+
+            publish_res = self._graph("POST", f"{IG_USER_ID}/media_publish", data={"creation_id": container_id})
             if "id" in publish_res:
                 logger.info(f"Published to Instagram Feed (Post ID: {publish_res['id']})")
                 return True
-            else:
-                logger.error(f"Instagram Publishing Failed: {publish_res}")
-                return False
+            logger.error(f"Instagram Publishing Failed: {publish_res}")
+            return False
         except Exception as e:
             logger.error(f"Meta Pipeline Failed: {e}")
             return False
@@ -253,50 +281,46 @@ class PublisherAgent:
             return False
 
     def post_reel_to_meta(self, caption: str, video_path: str) -> bool:
+        """Blocking: call via asyncio.to_thread from async code.
+
+        Both Facebook and Instagram use Meta's own resumable upload
+        (rupload.facebook.com), so the video is never put on a public host.
+        """
         if not all([FB_PAGE_ID, IG_USER_ID, META_PAGE_ACCESS_TOKEN]):
             logger.error("Missing Meta API credentials in .env file.")
             return False
-            
+
         if not os.path.exists(video_path):
             logger.error(f"Video file not found at {video_path}")
             return False
-            
+
         logger.info("--- STARTING META REELS PUBLISHING ---")
         overall_success = True
-        
-        # 1. FACEBOOK REELS (Local Chunked Upload)
+        with open(video_path, "rb") as f:
+            video_data = f.read()
+        upload_headers = self._auth_headers({"offset": "0", "file_size": str(len(video_data))})
+
+        # 1. FACEBOOK REELS
         try:
-            logger.info("Starting Facebook Reels local chunked upload...")
-            fb_init_url = f"https://graph.facebook.com/v19.0/{FB_PAGE_ID}/video_reels"
-            init_res = requests.post(fb_init_url, data={"upload_phase": "start", "access_token": META_PAGE_ACCESS_TOKEN}).json()
-            
+            init_res = self._graph("POST", f"{FB_PAGE_ID}/video_reels", data={"upload_phase": "start"})
             if "video_id" in init_res:
                 video_id = init_res["video_id"]
-                upload_url = init_res["upload_url"]
-                
-                with open(video_path, 'rb') as f:
-                    video_data = f.read()
-                    
-                headers = {
-                    "Authorization": f"OAuth {META_PAGE_ACCESS_TOKEN}",
-                    "offset": "0",
-                    "file_size": str(len(video_data))
-                }
-                upload_res = requests.post(upload_url, headers=headers, data=video_data)
-                
-                finish_res = requests.post(fb_init_url, data={
-                    "upload_phase": "finish",
-                    "video_id": video_id,
-                    "video_state": "PUBLISHED",
-                    "description": caption,
-                    "access_token": META_PAGE_ACCESS_TOKEN
-                }).json()
-                
-                if finish_res.get("success"):
-                    logger.info(f"Successfully published to Facebook Reels (Video ID: {video_id})")
-                else:
-                    logger.error(f"Failed to finalize Facebook Reel: {finish_res}")
+                up = requests.post(init_res["upload_url"], headers=upload_headers, data=video_data, timeout=300.0)
+                if up.status_code >= 400:
+                    logger.error(f"Facebook Reel upload failed: HTTP {up.status_code} {up.text[:300]}")
                     overall_success = False
+                else:
+                    finish_res = self._graph("POST", f"{FB_PAGE_ID}/video_reels", data={
+                        "upload_phase": "finish",
+                        "video_id": video_id,
+                        "video_state": "PUBLISHED",
+                        "description": caption,
+                    })
+                    if finish_res.get("success"):
+                        logger.info(f"Successfully published to Facebook Reels (Video ID: {video_id})")
+                    else:
+                        logger.error(f"Failed to finalize Facebook Reel: {finish_res}")
+                        overall_success = False
             else:
                 logger.error(f"Failed to initialize Facebook Reel upload: {init_res}")
                 overall_success = False
@@ -304,57 +328,33 @@ class PublisherAgent:
             logger.error(f"Facebook Reels Pipeline Failed: {e}")
             overall_success = False
 
-        # 2. INSTAGRAM REELS (Requires Public URL)
+        # 2. INSTAGRAM REELS (resumable upload, no public URL needed)
         try:
-            logger.info("Uploading video to temporary public host for IG API...")
-            with open(video_path, 'rb') as f:
-                catbox_res = requests.post("https://catbox.moe/user/api.php", data={"reqtype": "fileupload"}, files={"fileToUpload": f})
-            
-            public_video_url = catbox_res.text.strip()
-            if public_video_url.startswith("http"):
-                logger.info(f"Temporary public URL obtained: {public_video_url}")
-                
-                ig_container_url = f"https://graph.facebook.com/v19.0/{IG_USER_ID}/media"
-                ig_payload = {
-                    "media_type": "REELS",
-                    "video_url": public_video_url,
-                    "caption": caption,
-                    "access_token": META_PAGE_ACCESS_TOKEN
-                }
-                ig_res = requests.post(ig_container_url, data=ig_payload).json()
-                
-                if "id" in ig_res:
-                    container_id = ig_res["id"]
-                    logger.info(f"IG Container created ({container_id}). Waiting for Instagram to download and process...")
-                    
-                    status_url = f"https://graph.facebook.com/v19.0/{container_id}"
-                    for _ in range(12):
-                        time.sleep(5)
-                        status_res = requests.get(status_url, params={"fields": "status_code", "access_token": META_PAGE_ACCESS_TOKEN}).json()
-                        if status_res.get("status_code") == "FINISHED":
-                            break
-                        elif status_res.get("status_code") == "ERROR":
-                            logger.error(f"IG video processing error: {status_res}")
-                            break
-                    
-                    ig_publish_url = f"https://graph.facebook.com/v19.0/{IG_USER_ID}/media_publish"
-                    ig_pub_res = requests.post(ig_publish_url, data={"creation_id": container_id, "access_token": META_PAGE_ACCESS_TOKEN}).json()
-                    
+            ig_res = self._graph("POST", f"{IG_USER_ID}/media", data={
+                "media_type": "REELS",
+                "upload_type": "resumable",
+                "caption": caption,
+            })
+            if "id" in ig_res and ig_res.get("uri"):
+                container_id = ig_res["id"]
+                up = requests.post(ig_res["uri"], headers=upload_headers, data=video_data, timeout=300.0)
+                if up.status_code >= 400:
+                    logger.error(f"IG Reel upload failed: HTTP {up.status_code} {up.text[:300]}")
+                    overall_success = False
+                elif self._wait_for_ig_container(container_id):
+                    ig_pub_res = self._graph("POST", f"{IG_USER_ID}/media_publish", data={"creation_id": container_id})
                     if "id" in ig_pub_res:
                         logger.info(f"Successfully published to Instagram Reels (Post ID: {ig_pub_res['id']})")
                     else:
                         logger.error(f"IG Publish failed: {ig_pub_res}")
                         overall_success = False
                 else:
-                    logger.error(f"IG Container creation failed: {ig_res}")
                     overall_success = False
             else:
-                logger.error(f"Failed to get public URL from catbox: {public_video_url}")
+                logger.error(f"IG resumable container creation failed: {ig_res}")
                 overall_success = False
         except Exception as e:
             logger.error(f"Instagram Reels Pipeline Failed: {e}")
             overall_success = False
-            
+
         return overall_success
-
-
